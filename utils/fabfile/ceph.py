@@ -11,7 +11,7 @@ import time
 from fabric.api import *
 from testbeds.testbed import *
 class Logger(object):
-    def __init__(self, filename = '/opt/FlexStorage/FlexStorage.log'):
+    def __init__(self, filename = './FlexStorage.log'):
         self.terminal = sys.stdout
         self.log = open(filename, 'a')
 
@@ -156,11 +156,15 @@ def ceph_config_ssh(addr, password):
     local('rm -f /tmp/id_rsa.pub /tmp/authorized_keys')
 
 @task
-def add_new_node(hostname, ip, rpm):
+def add_new_node(hostname, ip, password, rpm):
     """Add a new node to cluster."""
     host_string="root@"+ip
-    ceph_config_ssh(host_string, env.password)
-    with settings(host_string=host_string, password=env.password, warn_only=True):
+    ceph_config_ssh(host_string, password)
+    execute('install_pkg_node', rpm, host_string)
+    with settings(host_string=host_string, password=password):
+        run("sh /opt/FlexStorage/build/setup.sh")
+        run("hostnamectl set-hostname %s" % hostname)
+    with settings(host_string=host_string, password=password, warn_only=True):
         run('yum install -y --disablerepo=\\* --enablerepo=FlexStorage ntp ntpdate')
         run("sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config")
         run('setenforce 0')
@@ -173,10 +177,6 @@ def add_new_node(hostname, ip, rpm):
         ntp_server = env.ntp['server'][0].split('@')[1]
         run('systemctl stop ntpd')
         run('ntpdate %s' % str(ntp_server))
-    execute('install_pkg_node', rpm, host_string)
-    with settings(host_string=host_string, password=env.password):
-	run("sh /opt/FlexStorage/build/setup.sh")
-	run("hostnamectl set-hostname %s" % hostname)
     with settings(host_string=env.roledefs['admin'][0], password=env.password, warn_only=True):
 	line = ip+' '+hostname
         run("sed -i '/%s$/d' /etc/hosts" % (hostname))
@@ -192,24 +192,25 @@ def install_ceph():
     	run('yum install --disablerepo=\\* --enablerepo=FlexStorage -y redhat-lsb-core')
 
 @task
-def add_osd(hostname, ip, disk_string, is_new_node, rpm):
+def add_osd(hostname, ip, password, disk_string, is_new_node, rpm):
     """Add a new osd to an available ceph cluster."""
     host_string="root@"+ip
     if is_new_node.lower()=="true" or is_new_node.lower()=="t":
-	add_new_node(hostname,ip,rpm)
-	with settings(host_string=host_string, password=env.password, warn_only=True):
+	add_new_node(hostname,ip,password,rpm)
+	with settings(host_string=host_string, password=password, warn_only=True):
 	    run('yum install --disablerepo=\\* --enablerepo=FlexStorage -y ceph')
             run('yum install --disablerepo=\\* --enablerepo=FlexStorage -y redhat-lsb-core')
 	with settings(host_string = env.roledefs['admin'][0], password=env.password, warn_only=True):
 	    with cd(env.ceph_conf['deploy_path']):
 		cmd="ceph-deploy --overwrite-conf admin %s" % (hostname)
 		run(cmd)
+        #ceph_node_install_calamari(host_string)
     else:
 	pass    
     with settings(host_string = env.roledefs['admin'][0], password=env.password, warn_only=True):
 	get("/etc/ceph/ceph.client.admin.keyring","/tmp/ceph.client.admin.keyring")
 	get("/var/lib/ceph/bootstrap-osd/ceph.keyring","/tmp/ceph.keyring")
-    with settings(host_string=host_string, password=env.password, warn_only=True):
+    with settings(host_string=host_string, password=password, warn_only=True):
 	put("/tmp/ceph.client.admin.keyring","/etc/ceph/ceph.client.admin.keyring")
 	put("/tmp/ceph.keyring","/var/lib/ceph/bootstrap-osd/ceph.keyring")
     local("rm -f /tmp/ceph.client.admin.keyring")
@@ -223,17 +224,16 @@ def add_osd(hostname, ip, disk_string, is_new_node, rpm):
 	    run(cmd)
 	    cmd="ceph-deploy osd activate %s:%s" % (hostname, disk_string)
 	    run(cmd)
-    ceph_node_install_calamari(host_string)
 
 @task
-def del_osd(hostname, osd_id):
+def del_osd(hostname, ip, password, osd_id):
     """Delete an osd with osd_id."""
-    host_string=env.roledefs['all'][env.hostnames['all'].index(hostname)]
-    with settings(host_string = env.roledefs['admin'][0], password=env.password):
+    host_string='root@'+ip.strip()
+    with settings(host_string = env.roledefs['admin'][0], password=password):
 	id_list=run("ceph osd tree |grep osd|awk '{print $3}'|awk -F . '{print $2}'")
-	id_list=[id_item.strip() for id_item in id_list]
+	id_list=id_list.split()
     if str(osd_id) in id_list:
-        with settings(host_string=host_string, password=env.password, warn_only=True):
+        with settings(host_string=host_string, password=password, warn_only=True):
 	    run("service ceph stop osd.%s" % osd_id)
 	    run("umount /var/lib/ceph/osd/ceph-%s" % osd_id)
         with settings(host_string = env.roledefs['admin'][0], password=env.password, warn_only=True):
@@ -243,22 +243,21 @@ def del_osd(hostname, osd_id):
             run("ceph osd rm %s" % osd_id)
     else:
         pass
-	#some log here.
 
 @task
-def add_mon(hostname, ip, is_new_node, rpm):
+def add_mon(hostname, ip, password, is_new_node, rpm):
     """Add a new monitor to an available ceph cluster."""
     host_string="root@"+ip
     if is_new_node.lower()=="true" or is_new_node.lower()=="t":
-	add_new_node(hostname,ip,rpm)
-	with settings(host_string = host_string, password=env.password, warn_only=True):
+	add_new_node(hostname,ip,password,rpm)
+	with settings(host_string = host_string, password=password, warn_only=True):
 	    run('yum install --disablerepo=\\* --enablerepo=FlexStorage -y ceph')
 	    run('yum install --disablerepo=\\* --enablerepo=FlexStorage -y redhat-lsb-core')
         with settings(host_string = env.roledefs['admin'][0], password=env.password, warn_only=True):
             with cd(env.ceph_conf['deploy_path']):
                 cmd="ceph-deploy --overwrite-conf admin %s" % (hostname)
 		run(cmd)
-    	ceph_node_install_calamari(host_string)
+    	#ceph_node_install_calamari(host_string)
     else:
 	pass
     with settings(host_string = env.roledefs['admin'][0], password=env.password, warn_only=True):
@@ -269,6 +268,11 @@ def add_mon(hostname, ip, is_new_node, rpm):
 @task
 def del_mon(hostname):
     """"Delete a moniter in ceph cluster."""
+    with settings(host_string = env.roledefs['admin'][0], password=env.password, warn_only=True):
+	with cd(env.ceph_conf['deploy_path']):
+	    cmd="ceph-deploy mon destroy %s" % (hostname)
+	    run(cmd)
+"""
     host_string=env.roledefs['all'][env.hostnames['all'].index(hostname)]
     with settings(host_string=host_string, password=env.password, warn_only=True):
 	    cmd='service ceph -a stop mon.%s' % (hostname)
@@ -277,6 +281,7 @@ def del_mon(hostname):
 	    run(cmd)
 	    cmd='rm -rf /var/lib/ceph/mon/ceph-%s' % (hostname)
 	    run(cmd)
+"""
 	
 @task
 def ceph_clear_dirs():
@@ -399,6 +404,12 @@ def ceph_install_calamari():
     execute("ceph_node_install_calamari", env.host_string)
 
 @task
+def setup_calamari_ceph_node(ip):
+    """An interface to install calamari on a ceph node"""
+    host_string = "root@"+ip
+    execute("ceph_node_install_calamari", host_string)
+
+@task
 def ceph_node_install_calamari(node_string):
     """Setup a ceph node for calamari."""
     calamari_addr = env.calamari['server_ip']
@@ -418,10 +429,9 @@ def ceph_node_install_calamari(node_string):
             run('salt-key -y -A')
     time.sleep(3)
     with settings(host_string = node_string, password=env.password, warn_only=True):
-        run('/etc/init.d/diamond stop')
         time.sleep(3)
         run('service salt-minion restart')
-        run('rm -f /var/lock/subsys/diamond')
+        run('/etc/init.d/diamond stop')
         loop=0
         while(1):
             loop = loop + 1
